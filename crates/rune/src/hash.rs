@@ -14,6 +14,7 @@ const TYPE: u64 = 0x2fac10b63a6cc57c;
 const INSTANCE_FUNCTION_HASH: u64 = 0x5ea77ffbcdf5f302;
 const FIELD_FUNCTION_HASH: u64 = 0xab53b6a7a53c757e;
 const OBJECT_KEYS: u64 = 0x4473d7017aef7645;
+const INDEX: u64 = 0x2579e52d1534901b;
 
 /// The primitive hash that among other things is used to reference items,
 /// types, and native functions.
@@ -43,6 +44,11 @@ impl Hash {
         I: IntoTypeHash,
     {
         path.into_type_hash()
+    }
+
+    /// The hash of an index.
+    pub fn index(index: usize) -> Self {
+        Self(INDEX ^ (index as u64))
     }
 
     /// Construct a hash from the given type id.
@@ -245,6 +251,16 @@ pub struct InstFnInfo {
     pub kind: InstFnKind,
     /// Parameters hash.
     pub parameters: Hash,
+}
+
+impl InstFnInfo {
+    pub(crate) fn index(protocol: Protocol, index: usize) -> Self {
+        Self {
+            hash: Hash::index(index),
+            kind: InstFnKind::Protocol(protocol),
+            parameters: Hash::EMPTY,
+        }
+    }
 }
 
 /// Trait used to determine what can be used as an instance function name.

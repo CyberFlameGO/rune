@@ -110,13 +110,13 @@ pub(crate) fn expand_install_with(
         });
     }
 
-    let mut fields = Vec::new();
-
     let ident = &input.ident;
     let (_, ty_generics, _) = generics.split_for_impl();
 
     match &input.data {
         syn::Data::Struct(st) => {
+            let mut fields = Vec::new();
+
             for field in &st.fields {
                 let attrs = ctx.field_attrs(&field.attrs)?;
 
@@ -156,14 +156,14 @@ pub(crate) fn expand_install_with(
                     fields.push(name);
                 }
             }
+
+            let len = fields.len();
+
+            installers.push(quote! {
+                module.struct_meta::<Self, #len>([#(#fields),*])?;
+            });
         }
-        syn::Data::Enum(..) => {
-            ctx.errors.push(syn::Error::new_spanned(
-                input,
-                "`Any` not supported on enums",
-            ));
-            return None;
-        }
+        syn::Data::Enum(..) => {}
         syn::Data::Union(..) => {
             ctx.errors.push(syn::Error::new_spanned(
                 input,
@@ -172,10 +172,6 @@ pub(crate) fn expand_install_with(
             return None;
         }
     }
-
-    installers.push(quote! {
-        module.struct_meta::<Self>(&[#(#fields),*][..])?;
-    });
 
     Some(quote! {
         #(#installers)*

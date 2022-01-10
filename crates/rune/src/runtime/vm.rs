@@ -948,38 +948,6 @@ impl Vm {
                     _ => return Ok(None),
                 })
             }
-            (TypeCheck::Type(hash), value) => match value {
-                Value::UnitStruct(empty) => {
-                    if empty.borrow_ref()?.rtti.hash != hash {
-                        return Ok(None);
-                    }
-
-                    Some(f(&[]))
-                }
-                Value::TupleStruct(tuple_struct) => {
-                    let tuple_struct = tuple_struct.borrow_ref()?;
-
-                    if tuple_struct.rtti.hash != hash {
-                        return Ok(None);
-                    }
-
-                    Some(f(tuple_struct.data()))
-                }
-                _ => None,
-            },
-            (TypeCheck::Variant(hash), Value::Variant(variant)) => {
-                let variant = variant.borrow_ref()?;
-
-                if variant.rtti().hash != hash {
-                    return Ok(None);
-                }
-
-                match variant.data() {
-                    VariantData::Unit => Some(f(&[])),
-                    VariantData::Tuple(tuple) => Some(f(&*tuple)),
-                    _ => None,
-                }
-            }
             (TypeCheck::Unit, Value::Unit) => Some(f(&[])),
             _ => None,
         })
@@ -1989,6 +1957,23 @@ impl Vm {
             return Ok(());
         }
 
+        if self.call_instance_fn(value.clone(), Protocol::TUPLE_INDEX_GET, (index,))? {
+            match Option::<Value>::from_value(self.stack.pop()?)? {
+                Some(value) => {
+                    self.stack.push(value);
+                }
+                None => {
+                    return Err(VmError::from(VmErrorKind::MissingIndex {
+                        target: value.type_info()?,
+                        index: VmIntegerRepr::from(index),
+                    }));
+                }
+            }
+
+            // NB: should leave a value on the stack.
+            return Ok(());
+        }
+
         Err(VmError::from(VmErrorKind::UnsupportedTupleIndexGet {
             target: value.type_info()?,
         }))
@@ -2016,6 +2001,25 @@ impl Vm {
 
         if let Some(value) = Self::try_tuple_like_index_get(value, index)? {
             self.stack.push(value);
+            return Ok(());
+        }
+
+        let value = value.clone();
+
+        if self.call_instance_fn(value.clone(), Protocol::TUPLE_INDEX_GET, (index,))? {
+            match Option::<Value>::from_value(self.stack.pop()?)? {
+                Some(value) => {
+                    self.stack.push(value);
+                }
+                None => {
+                    return Err(VmError::from(VmErrorKind::MissingIndex {
+                        target: value.type_info()?,
+                        index: VmIntegerRepr::from(index),
+                    }));
+                }
+            }
+
+            // NB: should leave a value on the stack.
             return Ok(());
         }
 
@@ -2355,13 +2359,79 @@ impl Vm {
     #[cfg_attr(feature = "bench", inline(never))]
     fn op_match_type(&mut self, hash: Hash) -> Result<(), VmError> {
         let value = self.stack.pop()?;
+        let is_match = value.type_hash()? == hash;
+        self.stack.push(is_match);
+        Ok(())
+    }
 
-        let value_hash = match value {
-            Value::Variant(variant) => variant.borrow_ref()?.rtti().hash,
-            value => value.type_hash()?,
+    #[cfg_attr(feature = "bench", inline(never))]
+    fn op_match_variant(
+        &mut self,
+        enum_hash: Hash,
+        variant_hash: Hash,
+        index: usize,
+    ) -> Result<(), VmError> {
+        let value = self.stack.pop()?;
+
+        let is_match = match &value {
+            Value::Variant(variant) => variant.borrow_ref()?.rtti().hash == variant_hash,
+            Value::Any(any) => {
+                let hash = any.borrow_ref()?.type_hash();
+
+                if hash == enum_hash
+                    && self.call_instance_fn(value, Protocol::IS_VARIANT, (index,))?
+                {
+                    self.stack.pop()?.as_bool()?
+                } else {
+                    false
+                }
+            }
+            _ => false,
         };
 
-        let is_match = value_hash == hash;
+        self.stack.push(is_match);
+        Ok(())
+    }
+
+    #[cfg_attr(feature = "bench", inline(never))]
+    fn op_match_builtin(&mut self, type_check: TypeCheck) -> Result<(), VmError> {
+        let value = self.stack.pop()?;
+
+        let is_match = match (type_check, value) {
+            (TypeCheck::Tuple, Value::Tuple(..)) => true,
+            (TypeCheck::Vec, Value::Vec(..)) => true,
+            (TypeCheck::Result(v), Value::Result(result)) => {
+                let result = result.borrow_ref()?;
+
+                match (v, &*result) {
+                    (0, Ok(..)) => true,
+                    (1, Err(..)) => true,
+                    _ => false,
+                }
+            }
+            (TypeCheck::Option(v), Value::Option(option)) => {
+                let option = option.borrow_ref()?;
+
+                match (v, &*option) {
+                    (0, Some(..)) => true,
+                    (1, None) => true,
+                    _ => false,
+                }
+            }
+            (TypeCheck::GeneratorState(v), Value::GeneratorState(state)) => {
+                use crate::runtime::GeneratorState::*;
+                let state = state.borrow_ref()?;
+
+                match (v, &*state) {
+                    (0, Complete(..)) => true,
+                    (1, Yielded(..)) => true,
+                    _ => false,
+                }
+            }
+            (TypeCheck::Unit, Value::Unit) => true,
+            _ => false,
+        };
+
         self.stack.push(is_match);
         Ok(())
     }
@@ -2937,6 +3007,16 @@ impl Vm {
                 }
                 Inst::MatchType { hash } => {
                     self.op_match_type(hash)?;
+                }
+                Inst::MatchVariant {
+                    enum_hash,
+                    variant_hash,
+                    index,
+                } => {
+                    self.op_match_variant(enum_hash, variant_hash, index)?;
+                }
+                Inst::MatchBuiltIn { type_check } => {
+                    self.op_match_builtin(type_check)?;
                 }
                 Inst::MatchObject { slot, exact } => {
                     self.op_match_object(slot, exact)?;

@@ -40,7 +40,7 @@
         "@types/vscode": "^1.47.1",
         "rollup": "^2.26.9",
         "typescript": "^3.9.7",
-        "vsce": "^1.79.5"
+        "vsce": "^1.103.1"
     },
     "contributes": {
         "languages": [
